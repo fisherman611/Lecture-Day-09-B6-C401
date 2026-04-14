@@ -89,67 +89,24 @@ def make_initial_state(task: str) -> AgentState:
 
 def supervisor_node(state: AgentState) -> AgentState:
     """
-    Supervisor phân tích task và quyết định:
-    1. Route sang worker nào
-    2. Có cần MCP tool không
-    3. Có risk cao cần HITL không
-
-    TODO Sprint 1: Implement routing logic dựa vào task keywords.
+    Supervisor dùng LLM để phân tích intent và quyết định route.
+    Fallback về keyword matching nếu LLM không available.
     """
-    task = state["task"].lower()
-    state["history"].append(f"[supervisor] received task: {state['task'][:80]}")
+    task = state["task"]
+    state["history"].append(f"[supervisor] received task: {task[:80]}")
 
-    # --- TODO: Implement routing logic ---
-    # Gợi ý:
-    # - "hoàn tiền", "refund", "flash sale", "license" → policy_tool_worker
-    # - "cấp quyền", "access level", "level 3", "emergency" → policy_tool_worker
-    # - "P1", "escalation", "sla", "ticket" → retrieval_worker
-    # - mã lỗi không rõ (ERR-XXX), không đủ context → human_review
-    # - còn lại → retrieval_worker
+    try:
+        from workers.supervisor_llm import llm_route
+        decision = llm_route(task)
+    except Exception as e:
+        state["history"].append(f"[supervisor] llm_route failed: {e}, using fallback")
+        from workers.supervisor_llm import _fallback_route
+        decision = _fallback_route(task)
 
-    route = "retrieval_worker"
-    route_reason = "default: no specific keyword matched"
-    needs_tool = False
-    risk_high = False
-
-    # Routing rules (theo thứ tự ưu tiên)
-    # policy_tool_worker: câu hỏi cần check exception, access control, temporal scoping
-    policy_keywords = [
-        "flash sale", "license key", "kỹ thuật số", "subscription",
-        "đã kích hoạt", "store credit",
-        "cấp quyền", "access level", "level 3", "level 2", "level 1",
-        "access control", "quyền truy cập",
-        "hoàn tiền không", "được hoàn tiền", "có hoàn tiền",  # câu hỏi yes/no về exception
-        "31/01", "30/01", "trước 01/02",                       # temporal scoping
-    ]
-    sla_keywords = ["p1", "sla", "ticket", "escalation", "sự cố", "incident"]
-    risk_keywords = ["emergency", "khẩn cấp", "contractor", "tạm thời", "2am"]
-    unknown_error_keywords = ["err-", "error code", "mã lỗi không rõ"]
-
-    if any(kw in task for kw in policy_keywords):
-        route = "policy_tool_worker"
-        matched = next((kw for kw in policy_keywords if kw in task), "policy keyword")
-        route_reason = f"policy/access keyword detected: '{matched}'"
-        needs_tool = True
-    elif any(kw in task for kw in sla_keywords):
-        route = "retrieval_worker"
-        matched = next((kw for kw in sla_keywords if kw in task), "sla keyword")
-        route_reason = f"SLA/ticket keyword detected: '{matched}'"
-    elif any(kw in task for kw in unknown_error_keywords):
-        route = "human_review"
-        route_reason = "unknown error code without context → human review"
-
-    if any(kw in task for kw in risk_keywords):
-        risk_high = True
-        route_reason += " | risk_high=True"
-
-    # Multi-hop: cả SLA lẫn access → policy_tool_worker (cần cross-doc)
-    has_sla = any(kw in task for kw in sla_keywords)
-    has_policy = any(kw in task for kw in policy_keywords)
-    if has_sla and has_policy:
-        route = "policy_tool_worker"
-        route_reason = "multi-hop: both SLA and policy keywords → policy_tool_worker for cross-doc"
-        needs_tool = True
+    route = decision.get("route", "retrieval_worker")
+    route_reason = decision.get("reason", "")
+    needs_tool = decision.get("needs_tool", False)
+    risk_high = decision.get("risk_high", False)
 
     state["supervisor_route"] = route
     state["route_reason"] = route_reason

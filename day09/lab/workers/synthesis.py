@@ -25,23 +25,14 @@ WORKER_NAME = "synthesis_worker"
 
 SYSTEM_PROMPT = """Bạn là trợ lý IT Helpdesk nội bộ. Nhiệm vụ: trả lời chính xác, đầy đủ, dựa HOÀN TOÀN vào tài liệu được cung cấp.
 
-QUY TẮC BẮT BUỘC:
+QUY TẮC:
 1. CHỈ dùng thông tin trong context. TUYỆT ĐỐI không dùng kiến thức ngoài.
-2. Nếu thông tin KHÔNG có trong tài liệu → nêu rõ không tìm thấy trong tài liệu nội bộ. Không được bịa hoặc suy đoán.
+2. Nếu thông tin KHÔNG có trong tài liệu → nêu rõ không tìm thấy. Không bịa, không suy đoán.
 3. Trích dẫn nguồn sau mỗi thông tin quan trọng: [tên_file.txt].
-4. Liệt kê ĐẦY ĐỦ — KHÔNG được bỏ sót bất kỳ kênh, người, bước, điều kiện nào có trong tài liệu.
-5. Exceptions/ngoại lệ → nêu TRƯỚC kết luận, không được bỏ qua.
-6. Đọc KỸ TOÀN BỘ context từ đầu đến cuối trước khi trả lời.
-
-QUY TẮC THEO TỪNG LOẠI CÂU HỎI:
-- Kênh thông báo P1: liệt kê ĐỦ 3 kênh nếu có (Slack #incident-p1, email incident@company.internal, PagerDuty).
-- Escalation: nêu rõ thời gian (phút) và đối tượng escalate (Senior Engineer?).
-- Phiên bản chính sách / ngày hiệu lực: nếu đơn hàng trước ngày hiệu lực → nêu rõ không thể xác nhận theo phiên bản cũ, KHÔNG suy luận thêm theo phiên bản khác.
-- Access level: nêu đủ số người phê duyệt, tên từng người, có emergency bypass không, điều kiện bypass. Nêu rõ ai phê duyệt (Team Lead? IT Admin? IT Security?). Người phê duyệt cuối cùng / thẩm quyền cao nhất là người được liệt kê CUỐI trong danh sách phê duyệt. QUAN TRỌNG: Section 4 (escalation khẩn cấp) trong access_control_sop.txt chỉ áp dụng cho Level 2 — KHÔNG áp dụng cho Level 3. Level 3 KHÔNG có emergency bypass, dù đang có P1. Level 2 emergency bypass cần approval ĐỒNG THỜI của Line Manager VÀ IT Admin on-call.
-- Store credit / hoàn tiền: nêu đúng con số VÀ giải thích rõ ý nghĩa (ví dụ: 110% = nhận thêm 10% so với số tiền hoàn gốc, tức là bonus thêm 10%).
-- Remote work: nêu đủ TẤT CẢ điều kiện — qua probation, số ngày tối đa, VÀ ai phê duyệt (Team Lead). Nếu nhân viên KHÔNG đủ điều kiện (đang probation) → kết luận rõ KHÔNG được phép, sau đó nêu điều kiện để được phép.
-- Policy exception: khi nêu ngoại lệ phải cite rõ điều khoản cụ thể (ví dụ: Điều 3, chính sách v4).
-- Nếu câu hỏi hỏi thông tin không có trong tài liệu → nêu rõ không tìm thấy, không bịa số liệu, gợi ý liên hệ bộ phận liên quan nếu phù hợp.
+4. Liệt kê ĐẦY ĐỦ — không bỏ sót kênh, người, bước, điều kiện nào có trong tài liệu.
+5. Exceptions/ngoại lệ → nêu TRƯỚC kết luận.
+6. Nếu câu hỏi về ngày/phiên bản → kiểm tra effective date trong tài liệu, không suy luận sang phiên bản khác.
+7. Nếu không tìm thấy thông tin → gợi ý liên hệ bộ phận liên quan.
 """
 
 
@@ -116,32 +107,51 @@ def _build_context(chunks: list, policy_result: dict) -> str:
 
 def _estimate_confidence(chunks: list, answer: str, policy_result: dict) -> float:
     """
-    Ước tính confidence dựa vào:
-    - Số lượng và quality của chunks
-    - Có exceptions không
-    - Answer có abstain không
-
-    TODO Sprint 2: Có thể dùng LLM-as-Judge để tính confidence chính xác hơn.
+    Dùng LLM-as-Judge để đánh giá confidence thay vì heuristic chunk score.
+    Fallback về heuristic nếu LLM không available.
     """
     if not chunks:
-        return 0.1  # Không có evidence → low confidence
+        return 0.1
 
-    # Abstain vì thiếu tài liệu (v3, mức phạt...) → confidence thấp nhưng đây là đúng
+    # Abstain case
     abstain_phrases = ["không có trong tài liệu", "không tìm thấy thông tin", "không thể xác nhận theo phiên bản"]
     if any(p in answer.lower() for p in abstain_phrases):
-        return 0.3  # Abstain → moderate-low, không phải lỗi
+        return 0.3
 
-    # Weighted average của chunk scores
-    if chunks:
-        avg_score = sum(c.get("score", 0) for c in chunks) / len(chunks)
-    else:
-        avg_score = 0
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if openai_key and not openai_key.startswith("sk-..."):
+        try:
+            from openai import OpenAI
+            import json as _json
+            client = OpenAI(api_key=openai_key)
+            sources = list({c.get("source", "") for c in chunks})
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Đánh giá mức độ câu trả lời được hỗ trợ bởi tài liệu.\n"
+                        f"Nguồn tài liệu đã retrieve: {sources}\n"
+                        f"Số chunks: {len(chunks)}\n"
+                        f"Câu trả lời:\n{answer[:400]}\n\n"
+                        f"Cho điểm 0.0-1.0 dựa trên: có cite nguồn không, "
+                        f"có nêu đủ thông tin không, có abstain đúng chỗ không.\n"
+                        f"Trả về JSON: {{\"score\": <float>, \"reason\": \"<1 câu>\"}}"
+                    )
+                }],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+                max_tokens=100,
+            )
+            result = _json.loads(resp.choices[0].message.content)
+            return round(float(result.get("score", 0.5)), 2)
+        except Exception:
+            pass
 
-    # Penalty nếu có exceptions (phức tạp hơn)
+    # Fallback: heuristic
+    avg_score = sum(c.get("score", 0) for c in chunks) / len(chunks)
     exception_penalty = 0.05 * len(policy_result.get("exceptions_found", []))
-
-    confidence = min(0.95, avg_score - exception_penalty)
-    return round(max(0.1, confidence), 2)
+    return round(max(0.1, min(0.95, avg_score - exception_penalty)), 2)
 
 
 def synthesize(task: str, chunks: list, policy_result: dict) -> dict:
@@ -158,18 +168,7 @@ def synthesize(task: str, chunks: list, policy_result: dict) -> dict:
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": f"""Câu hỏi: {task}
-
-{context}
-
-Hãy trả lời câu hỏi dựa vào tài liệu trên.
-Lưu ý quan trọng:
-- Liệt kê ĐẦY ĐỦ tất cả thông tin có trong tài liệu, không tóm tắt bỏ bớt.
-- Nếu có cảnh báo phiên bản chính sách ở trên → PHẢI nêu rõ, KHÔNG được suy luận thêm theo phiên bản khác.
-- Nếu thông tin không có trong tài liệu → abstain rõ ràng, gợi ý liên hệ bộ phận liên quan.
-- Nếu câu hỏi về store credit / phần trăm → nêu con số VÀ giải thích: 110% nghĩa là nhận thêm 10% bonus so với số tiền hoàn gốc.
-- Nếu câu hỏi về remote work → nêu đủ: điều kiện eligibility, số ngày tối đa, VÀ ai phê duyệt.
-- Nếu câu hỏi về policy exception → cite rõ điều khoản (Điều mấy, phiên bản nào)."""
+            "content": f"Câu hỏi: {task}\n\n{context}\n\nHãy trả lời dựa vào tài liệu trên."
         }
     ]
 
