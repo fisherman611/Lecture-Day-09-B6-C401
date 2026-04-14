@@ -162,7 +162,7 @@ def run(state: dict) -> dict:
         Updated AgentState với policy_result và mcp_tools_used
     """
     task = state.get("task", "")
-    chunks = state.get("retrieved_chunks", [])
+    chunks = state.get("retrieved_chunks") or []
     needs_tool = state.get("needs_tool", False)
 
     state.setdefault("workers_called", [])
@@ -220,13 +220,14 @@ def run(state: dict) -> dict:
             # Gắn kết quả MCP vào retrieved_chunks để synthesis có thêm context
             if mcp_result.get("output") and not mcp_result["output"].get("error"):
                 out = mcp_result["output"]
+                has_bypass = out.get('emergency_override', False)
+                bypass_text = "CÓ emergency bypass" if has_bypass else "KHÔNG có emergency bypass — phải follow quy trình chuẩn"
                 mcp_chunk = {
                     "text": (
                         f"Level {level} access — Kết quả kiểm tra quyền (check_access_permission):\n"
-                        f"- Có thể cấp (can_grant): {out.get('can_grant')}\n"
                         f"- Số người phê duyệt cần thiết: {out.get('approver_count')} người\n"
                         f"- Danh sách người phê duyệt: {out.get('required_approvers')}\n"
-                        f"- Level {level} CÓ emergency bypass: {out.get('emergency_override')}\n"
+                        f"- Emergency bypass: {bypass_text}\n"
                         f"- Ghi chú: {out.get('notes', [])}"
                     ),
                     "source": out.get("source", "access_control_sop.txt"),
@@ -264,8 +265,12 @@ def run(state: dict) -> dict:
             # Direct lookup chunk escalation SLA P1 (sla_p1_2026_3)
             try:
                 import chromadb as _chroma
-                _client = _chroma.PersistentClient(path="./chroma_db")
-                _col = _client.get_collection("day09_docs")
+                _HERE_PT = os.path.dirname(os.path.abspath(__file__))
+                _LAB_ROOT_PT = os.path.dirname(_HERE_PT)
+                _chroma_path = os.getenv("CHROMA_DB_PATH", os.path.join(_LAB_ROOT_PT, "chroma_db"))
+                _chroma_col = os.getenv("CHROMA_COLLECTION", "day09_docs")
+                _client = _chroma.PersistentClient(path=_chroma_path)
+                _col = _client.get_collection(_chroma_col)
                 direct = _col.get(ids=["sla_p1_2026_3"], include=["documents","metadatas"])
                 if direct["documents"]:
                     sla_chunk = {

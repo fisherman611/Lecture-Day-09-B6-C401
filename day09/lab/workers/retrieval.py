@@ -17,6 +17,15 @@ Gọi độc lập để test:
 
 import os
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ─── Paths ───────────────────────────────────
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_LAB_ROOT = os.path.dirname(_HERE)  # workers/ → lab/
+CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", os.path.join(_LAB_ROOT, "chroma_db"))
+CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "day09_docs")
 
 # ─────────────────────────────────────────────
 # Worker Contract (xem contracts/worker_contracts.yaml)
@@ -25,7 +34,7 @@ import sys
 # ─────────────────────────────────────────────
 
 WORKER_NAME = "retrieval_worker"
-DEFAULT_TOP_K = 7
+DEFAULT_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "7"))
 
 
 _ST_MODEL = None  # module-level cache
@@ -66,22 +75,25 @@ def _get_embedding_fn():
     return embed
 
 
+# Preload model ngay khi import để tránh cold-start latency
+try:
+    _get_embedding_fn()
+except Exception:
+    pass
+
+
 def _get_collection():
-    """
-    Kết nối ChromaDB collection.
-    TODO Sprint 2: Đảm bảo collection đã được build từ Step 3 trong README.
-    """
+    """Kết nối ChromaDB collection."""
     import chromadb
-    client = chromadb.PersistentClient(path="./chroma_db")
+    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
     try:
-        collection = client.get_collection("day09_docs")
+        collection = client.get_collection(CHROMA_COLLECTION)
     except Exception:
-        # Auto-create nếu chưa có
         collection = client.get_or_create_collection(
-            "day09_docs",
+            CHROMA_COLLECTION,
             metadata={"hnsw:space": "cosine"}
         )
-        print(f"⚠️  Collection 'day09_docs' chưa có data. Chạy index script trong README trước.")
+        print(f"⚠️  Collection '{CHROMA_COLLECTION}' chưa có data. Chạy index script trong README trước.")
     return collection
 
 
@@ -164,8 +176,8 @@ def run(state: dict) -> dict:
         if any(kw in task_lower for kw in ["thông báo", "kênh", "notification", "22:47", "22:57", "pagerduty", "ai nhận"]):
             # Direct lookup chunk PagerDuty (sla_p1_2026_8) và escalation (sla_p1_2026_3)
             import chromadb as _chroma
-            _client = _chroma.PersistentClient(path="./chroma_db")
-            _col = _client.get_collection("day09_docs")
+            _client = _chroma.PersistentClient(path=CHROMA_DB_PATH)
+            _col = _client.get_collection(CHROMA_COLLECTION)
             try:
                 direct = _col.get(
                     ids=["sla_p1_2026_8", "sla_p1_2026_3"],

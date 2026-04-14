@@ -113,11 +113,14 @@ def supervisor_node(state: AgentState) -> AgentState:
     risk_high = False
 
     # Routing rules (theo thứ tự ưu tiên)
+    # policy_tool_worker: câu hỏi cần check exception, access control, temporal scoping
     policy_keywords = [
-        "hoàn tiền", "refund", "flash sale", "license", "license key",
+        "flash sale", "license key", "kỹ thuật số", "subscription",
+        "đã kích hoạt", "store credit",
         "cấp quyền", "access level", "level 3", "level 2", "level 1",
-        "kỹ thuật số", "subscription", "store credit", "đã kích hoạt",
         "access control", "quyền truy cập",
+        "hoàn tiền không", "được hoàn tiền", "có hoàn tiền",  # câu hỏi yes/no về exception
+        "31/01", "30/01", "trước 01/02",                       # temporal scoping
     ]
     sla_keywords = ["p1", "sla", "ticket", "escalation", "sự cố", "incident"]
     risk_keywords = ["emergency", "khẩn cấp", "contractor", "tạm thời", "2am"]

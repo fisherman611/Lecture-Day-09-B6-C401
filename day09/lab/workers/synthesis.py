@@ -23,19 +23,25 @@ load_dotenv()
 
 WORKER_NAME = "synthesis_worker"
 
-SYSTEM_PROMPT = """Bạn là trợ lý IT Helpdesk nội bộ.
+SYSTEM_PROMPT = """Bạn là trợ lý IT Helpdesk nội bộ. Nhiệm vụ: trả lời chính xác, đầy đủ, dựa HOÀN TOÀN vào tài liệu được cung cấp.
 
-Quy tắc nghiêm ngặt:
-1. CHỈ trả lời dựa vào context được cung cấp. KHÔNG dùng kiến thức ngoài.
-2. Nếu context không đủ để trả lời → nói rõ "Không đủ thông tin trong tài liệu nội bộ".
-3. Trích dẫn nguồn cuối mỗi câu quan trọng: [tên_file].
-4. Trả lời ĐẦY ĐỦ — liệt kê TẤT CẢ kênh, người, bước có trong tài liệu. KHÔNG tóm tắt bỏ bớt.
-5. Nếu có exceptions/ngoại lệ → nêu rõ ràng trước khi kết luận.
-6. Đọc KỸ TOÀN BỘ context kể cả phần cuối — thông tin quan trọng thường ở cuối.
-7. Khi câu hỏi hỏi về ngày tháng/phiên bản → kiểm tra effective date trong tài liệu.
-8. Khi câu hỏi hỏi về kênh thông báo → liệt kê TẤT CẢ: Slack, email, PagerDuty nếu có.
-9. Khi câu hỏi hỏi về escalation → nêu rõ: sau bao lâu, escalate lên ai (Senior Engineer?).
-10. Khi câu hỏi hỏi về emergency access → nêu rõ: có bypass không, điều kiện bypass là gì.
+QUY TẮC BẮT BUỘC:
+1. CHỈ dùng thông tin trong context. TUYỆT ĐỐI không dùng kiến thức ngoài.
+2. Nếu thông tin KHÔNG có trong tài liệu → nêu rõ không tìm thấy trong tài liệu nội bộ. Không được bịa hoặc suy đoán.
+3. Trích dẫn nguồn sau mỗi thông tin quan trọng: [tên_file.txt].
+4. Liệt kê ĐẦY ĐỦ — KHÔNG được bỏ sót bất kỳ kênh, người, bước, điều kiện nào có trong tài liệu.
+5. Exceptions/ngoại lệ → nêu TRƯỚC kết luận, không được bỏ qua.
+6. Đọc KỸ TOÀN BỘ context từ đầu đến cuối trước khi trả lời.
+
+QUY TẮC THEO TỪNG LOẠI CÂU HỎI:
+- Kênh thông báo P1: liệt kê ĐỦ 3 kênh nếu có (Slack #incident-p1, email incident@company.internal, PagerDuty).
+- Escalation: nêu rõ thời gian (phút) và đối tượng escalate (Senior Engineer?).
+- Phiên bản chính sách / ngày hiệu lực: nếu đơn hàng trước ngày hiệu lực → nêu rõ không thể xác nhận theo phiên bản cũ, KHÔNG suy luận thêm theo phiên bản khác.
+- Access level: nêu đủ số người phê duyệt, tên từng người, có emergency bypass không, điều kiện bypass. Nêu rõ ai phê duyệt (Team Lead? IT Admin? IT Security?). Người phê duyệt cuối cùng / thẩm quyền cao nhất là người được liệt kê CUỐI trong danh sách phê duyệt. QUAN TRỌNG: Section 4 (escalation khẩn cấp) trong access_control_sop.txt chỉ áp dụng cho Level 2 — KHÔNG áp dụng cho Level 3. Level 3 KHÔNG có emergency bypass, dù đang có P1. Level 2 emergency bypass cần approval ĐỒNG THỜI của Line Manager VÀ IT Admin on-call.
+- Store credit / hoàn tiền: nêu đúng con số VÀ giải thích rõ ý nghĩa (ví dụ: 110% = nhận thêm 10% so với số tiền hoàn gốc, tức là bonus thêm 10%).
+- Remote work: nêu đủ TẤT CẢ điều kiện — qua probation, số ngày tối đa, VÀ ai phê duyệt (Team Lead). Nếu nhân viên KHÔNG đủ điều kiện (đang probation) → kết luận rõ KHÔNG được phép, sau đó nêu điều kiện để được phép.
+- Policy exception: khi nêu ngoại lệ phải cite rõ điều khoản cụ thể (ví dụ: Điều 3, chính sách v4).
+- Nếu câu hỏi hỏi thông tin không có trong tài liệu → nêu rõ không tìm thấy, không bịa số liệu, gợi ý liên hệ bộ phận liên quan nếu phù hợp.
 """
 
 
@@ -53,8 +59,8 @@ def _call_llm(messages: list) -> str:
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
-                temperature=0.1,
-                max_tokens=800,
+                temperature=0.0,
+                max_tokens=1200,
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -83,9 +89,10 @@ def _build_context(chunks: list, policy_result: dict) -> str:
     # Đưa policy_version_note lên ĐẦU để LLM đọc trước
     if policy_result and policy_result.get("policy_version_note"):
         parts.append(
-            f"⚠️ LƯU Ý QUAN TRỌNG VỀ PHIÊN BẢN CHÍNH SÁCH:\n"
+            f"⚠️ CẢNH BÁO PHIÊN BẢN CHÍNH SÁCH — ĐỌC TRƯỚC KHI TRẢ LỜI:\n"
             f"{policy_result['policy_version_note']}\n"
-            f"→ Phải nêu rõ điều này trong câu trả lời."
+            f"→ BẮT BUỘC: Nêu rõ không thể xác nhận theo phiên bản cũ. "
+            f"KHÔNG được suy luận hoặc áp dụng chính sách v4 cho đơn hàng này."
         )
 
     if chunks:
@@ -119,8 +126,10 @@ def _estimate_confidence(chunks: list, answer: str, policy_result: dict) -> floa
     if not chunks:
         return 0.1  # Không có evidence → low confidence
 
-    if "Không đủ thông tin" in answer or "không có trong tài liệu" in answer.lower():
-        return 0.3  # Abstain → moderate-low
+    # Abstain vì thiếu tài liệu (v3, mức phạt...) → confidence thấp nhưng đây là đúng
+    abstain_phrases = ["không có trong tài liệu", "không tìm thấy thông tin", "không thể xác nhận theo phiên bản"]
+    if any(p in answer.lower() for p in abstain_phrases):
+        return 0.3  # Abstain → moderate-low, không phải lỗi
 
     # Weighted average của chunk scores
     if chunks:
@@ -154,7 +163,13 @@ def synthesize(task: str, chunks: list, policy_result: dict) -> dict:
 {context}
 
 Hãy trả lời câu hỏi dựa vào tài liệu trên.
-Lưu ý: Liệt kê ĐẦY ĐỦ tất cả thông tin có trong tài liệu, không tóm tắt bỏ bớt."""
+Lưu ý quan trọng:
+- Liệt kê ĐẦY ĐỦ tất cả thông tin có trong tài liệu, không tóm tắt bỏ bớt.
+- Nếu có cảnh báo phiên bản chính sách ở trên → PHẢI nêu rõ, KHÔNG được suy luận thêm theo phiên bản khác.
+- Nếu thông tin không có trong tài liệu → abstain rõ ràng, gợi ý liên hệ bộ phận liên quan.
+- Nếu câu hỏi về store credit / phần trăm → nêu con số VÀ giải thích: 110% nghĩa là nhận thêm 10% bonus so với số tiền hoàn gốc.
+- Nếu câu hỏi về remote work → nêu đủ: điều kiện eligibility, số ngày tối đa, VÀ ai phê duyệt.
+- Nếu câu hỏi về policy exception → cite rõ điều khoản (Điều mấy, phiên bản nào)."""
         }
     ]
 
@@ -174,8 +189,8 @@ def run(state: dict) -> dict:
     Worker entry point — gọi từ graph.py.
     """
     task = state.get("task", "")
-    chunks = state.get("retrieved_chunks", [])
-    policy_result = state.get("policy_result", {})
+    chunks = state.get("retrieved_chunks") or []
+    policy_result = state.get("policy_result") or {}
 
     state.setdefault("workers_called", [])
     state.setdefault("history", [])

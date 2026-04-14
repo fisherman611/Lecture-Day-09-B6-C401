@@ -1,8 +1,37 @@
+# ─── OS ───────────────────────────────────────
 .DS_Store
+Thumbs.db
 *.swp
 *~
 
-# Grading questions — không public trước 17:00
-day08/lab/data/grading_questions.json
-day09/lab/data/grading_questions.json
-day10/lab/data/grading_questions.json
+# ─── Python ───────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ─── Virtual environments ─────────────────────
+.venv/
+venv/
+env/
+.env
+!.env.example
+
+# ─── Secrets / API keys ───────────────────────
+*.key
+*.pem
+secrets.json
+
+# ─── ChromaDB (vector store — rebuild từ docs) ─
+**/chroma_db/
+
+# ─── Artifacts / generated outputs ───────────
+**/artifacts/traces/
+**/artifacts/eval_report.json
+# grading_run.jsonl cần nộp → KHÔNG ignore
+
+# ─── Sentence Transformers cache ──────────────
+.cache/
+~/.cache/huggingface/
+
