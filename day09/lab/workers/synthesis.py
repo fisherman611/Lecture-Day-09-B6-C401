@@ -17,6 +17,9 @@ Gọi độc lập để test:
 """
 
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 WORKER_NAME = "synthesis_worker"
 
@@ -26,48 +29,64 @@ Quy tắc nghiêm ngặt:
 1. CHỈ trả lời dựa vào context được cung cấp. KHÔNG dùng kiến thức ngoài.
 2. Nếu context không đủ để trả lời → nói rõ "Không đủ thông tin trong tài liệu nội bộ".
 3. Trích dẫn nguồn cuối mỗi câu quan trọng: [tên_file].
-4. Trả lời súc tích, có cấu trúc. Không dài dòng.
+4. Trả lời ĐẦY ĐỦ — liệt kê TẤT CẢ kênh, người, bước có trong tài liệu. KHÔNG tóm tắt bỏ bớt.
 5. Nếu có exceptions/ngoại lệ → nêu rõ ràng trước khi kết luận.
+6. Đọc KỸ TOÀN BỘ context kể cả phần cuối — thông tin quan trọng thường ở cuối.
+7. Khi câu hỏi hỏi về ngày tháng/phiên bản → kiểm tra effective date trong tài liệu.
+8. Khi câu hỏi hỏi về kênh thông báo → liệt kê TẤT CẢ: Slack, email, PagerDuty nếu có.
+9. Khi câu hỏi hỏi về escalation → nêu rõ: sau bao lâu, escalate lên ai (Senior Engineer?).
+10. Khi câu hỏi hỏi về emergency access → nêu rõ: có bypass không, điều kiện bypass là gì.
 """
 
 
 def _call_llm(messages: list) -> str:
     """
     Gọi LLM để tổng hợp câu trả lời.
-    TODO Sprint 2: Implement với OpenAI hoặc Gemini.
+    Thử OpenAI trước, fallback Gemini nếu không có key.
     """
     # Option A: OpenAI
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.1,  # Low temperature để grounded
-            max_tokens=500,
-        )
-        return response.choices[0].message.content
-    except Exception:
-        pass
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if openai_key and not openai_key.startswith("sk-..."):
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=openai_key)
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                temperature=0.1,
+                max_tokens=800,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"  [synthesis] OpenAI error: {e}")
 
     # Option B: Gemini
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        combined = "\n".join([m["content"] for m in messages])
-        response = model.generate_content(combined)
-        return response.text
-    except Exception:
-        pass
+    gemini_key = os.getenv("GOOGLE_API_KEY", "")
+    if gemini_key and not gemini_key.startswith("AI..."):
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            combined = "\n".join([m["content"] for m in messages])
+            response = model.generate_content(combined)
+            return response.text
+        except Exception as e:
+            print(f"  [synthesis] Gemini error: {e}")
 
-    # Fallback: trả về message báo lỗi (không hallucinate)
     return "[SYNTHESIS ERROR] Không thể gọi LLM. Kiểm tra API key trong .env."
 
 
 def _build_context(chunks: list, policy_result: dict) -> str:
     """Xây dựng context string từ chunks và policy result."""
     parts = []
+
+    # Đưa policy_version_note lên ĐẦU để LLM đọc trước
+    if policy_result and policy_result.get("policy_version_note"):
+        parts.append(
+            f"⚠️ LƯU Ý QUAN TRỌNG VỀ PHIÊN BẢN CHÍNH SÁCH:\n"
+            f"{policy_result['policy_version_note']}\n"
+            f"→ Phải nêu rõ điều này trong câu trả lời."
+        )
 
     if chunks:
         parts.append("=== TÀI LIỆU THAM KHẢO ===")
@@ -134,7 +153,8 @@ def synthesize(task: str, chunks: list, policy_result: dict) -> dict:
 
 {context}
 
-Hãy trả lời câu hỏi dựa vào tài liệu trên."""
+Hãy trả lời câu hỏi dựa vào tài liệu trên.
+Lưu ý: Liệt kê ĐẦY ĐỦ tất cả thông tin có trong tài liệu, không tóm tắt bỏ bớt."""
         }
     ]
 
